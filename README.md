@@ -8,19 +8,19 @@ Gate staff log every incoming order, the app issues a one-time password (OTP) fo
 
 ## 📌 Table of Contents
 
-- [The Problem](#-the-problem)
-- [Features](#-features)
-- [How It Works](#-how-it-works)
-- [Order Lifecycle](#-order-lifecycle)
-- [Architecture](#-architecture)
-- [Tech Stack](#-tech-stack)
-- [Getting Started](#-getting-started)
-- [API Reference](#-api-reference)
-- [Data Model](#-data-model)
-- [Security](#-security)
-- [Roadmap](#-roadmap)
-- [Contributing](#-contributing)
-- [Author](#-author)
+- The Problem
+- Features
+- How It Works
+- Order Lifecycle
+- Architecture
+- Tech Stack
+- Getting Started
+- API Reference
+- Data Model
+- Security
+- Roadmap
+- Contributing
+- Author
 
 ---
 
@@ -92,23 +92,25 @@ An order is only marked **Collected** after its own OTP is verified, even inside
                              └─────────────────────┘
 ```
 
-Clients never touch the database. The API checks the caller's role, writes the change, then asks the notification service to alert the resident.
+Clients never touch the database. The API checks the caller’s role, writes the change, then asks the notification service to alert the resident.
 
 ## 🛠 Tech Stack
 
 > Update this section to match what you actually used.
+> 
 
 | Layer | Technology |
-|---|---|
-| Frontend | _e.g. React / mobile-first web app_ |
-| Backend | _e.g. Node.js + Express_ |
-| Database | _e.g. PostgreSQL / MongoDB_ |
+| --- | --- |
+| Frontend | *e.g. React / mobile-first web app* |
+| Backend | *e.g. Node.js + Express* |
+| Database | *e.g. PostgreSQL / MongoDB* |
 | Auth | JWT, bcrypt-hashed passwords |
-| Notifications | _e.g. Firebase Cloud Messaging / SMS gateway_ |
+| Notifications | *e.g. Firebase Cloud Messaging / SMS gateway* |
 
 ## 🚀 Getting Started
 
 > Commands below are a template. Adjust them to your project.
+> 
 
 ### Prerequisites
 
@@ -134,7 +136,7 @@ npm run dev
 
 ### Environment variables
 
-```env
+```
 PORT=5000
 DATABASE_URL=your_database_url
 JWT_SECRET=your_jwt_secret
@@ -146,7 +148,7 @@ OTP_EXPIRY_MINUTES=10
 All endpoints are under `/api`. Everything except register and login needs a valid token (`Authorization: Bearer <jwt>`).
 
 | Method | Endpoint | Purpose | Access |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | POST | `/auth/register` | Create a new account | Public |
 | POST | `/auth/login` | Log in and receive a JWT | Public |
 | GET | `/users` | List all users | Staff, Admin |
@@ -160,44 +162,200 @@ All endpoints are under `/api`. Everything except register and login needs a val
 | POST | `/orders/:id/resend-otp` | Regenerate and resend OTP | Staff |
 | POST | `/pickup-groups` | Create a collective pickup | Staff |
 | GET | `/pickup-groups/:id` | View group and per-order status | Staff, Admin, or a resident in the group |
-| GET | `/users/:id/orders` | A user's order history | Staff, Admin, or the user |
+| GET | `/users/:id/orders` | A user’s order history | Staff, Admin, or the user |
 
-### Example: register
+### Conventions
 
-```http
-POST /api/auth/register
+- **Base URL:** `http://localhost:5000/api`
+- **Format:** JSON in and out, so send `Content-Type: application/json`
+- **Auth:** protected routes need `Authorization: Bearer <jwt>`
+- **Passwords and OTPs:** never returned in any response
+- **Errors:** every error uses the same shape
+
+```json
+{ "error": { "code": "EMAIL_EXISTS", "message": "An account with this email already exists" } }
 ```
+
+| Status | Meaning |
+| --- | --- |
+| 200 / 201 | Success / created |
+| 400 | Invalid or missing fields |
+| 401 | Missing, expired or invalid token, or wrong login |
+| 403 | Role not allowed for this action |
+| 404 | User not found |
+| 409 | Email already registered |
+| 429 | Too many login attempts |
+
+---
+
+### 1. Register
+
+`POST /api/auth/register` · **Access:** public
+
+Creates a new account. Residents are created by default; `staff` and `admin` roles can only be assigned by an admin.
+
+**Request body**
+
+| Field | Type | Required | Rules |
+| --- | --- | --- | --- |
+| `name` | string | Yes | 2 to 60 characters |
+| `email` | string | Yes | Valid email, unique |
+| `password` | string | Yes | At least 8 characters, stored hashed |
+| `role` | string | No | `resident` (default), `staff`, `admin` |
+| `hostel` | string | Residents | Required when role is `resident` |
+| `room_no` | string | Residents | Required when role is `resident` |
+| `phone` | string | No | 10 digits |
+
+```bash
+curl -X POST http://localhost:5000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Student Name",
+    "email": "student@example.com",
+    "password": "StrongPass123",
+    "role": "resident",
+    "hostel": "Block A",
+    "room_no": "214",
+    "phone": "9XXXXXXXXX"
+  }'
+```
+
+**Response `201 Created`**
 
 ```json
 {
-  "name": "Student Name",
-  "email": "student@example.com",
-  "password": "********",
-  "role": "resident",
-  "hostel": "Block A",
-  "room_no": "214",
-  "phone": "9XXXXXXXXX"
+  "user": {
+    "id": "u_101",
+    "name": "Student Name",
+    "email": "student@example.com",
+    "role": "resident",
+    "hostel": "Block A",
+    "room_no": "214",
+    "phone": "9XXXXXXXXX",
+    "created_at": "2026-11-20T09:30:00Z"
+  }
 }
 ```
 
-### Example: login
+**Errors:** `400` validation failed · `409` email already registered · `403` role other than `resident` requested without an admin token
 
-```http
-POST /api/auth/login
+---
+
+### 2. Login
+
+`POST /api/auth/login` · **Access:** public
+
+Checks the credentials and returns a JWT to use on every later request.
+
+**Request body**
+
+| Field | Type | Required |
+| --- | --- | --- |
+| `email` | string | Yes |
+| `password` | string | Yes |
+
+```bash
+curl -X POST http://localhost:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{ "email": "student@example.com", "password": "StrongPass123" }'
 ```
+
+**Response `200 OK`**
 
 ```json
-{ "email": "student@example.com", "password": "********" }
+{
+  "token": "<jwt>",
+  "expiresIn": 3600,
+  "user": { "id": "u_101", "name": "Student Name", "role": "resident" }
+}
 ```
 
-```json
-{ "token": "<jwt>", "user": { "id": "u_101", "name": "Student Name", "role": "resident" } }
+**Errors:** `400` missing fields · `401` wrong email or password (same message for both, so accounts cannot be guessed) · `403` account deactivated · `429` too many failed attempts, try again later
+
+---
+
+### 3. Get all users
+
+`GET /api/users` · **Access:** staff, admin
+
+Returns a paginated list of users. Filters are optional and can be combined.
+
+**Query parameters**
+
+| Param | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `role` | string | all | Filter by `resident`, `staff` or `admin` |
+| `hostel` | string | all | Filter by hostel |
+| `search` | string | none | Match on name, email or room number |
+| `page` | integer | 1 | Page number |
+| `limit` | integer | 20 | Page size, maximum 100 |
+
+```bash
+curl "http://localhost:5000/api/users?role=resident&hostel=Block%20A&page=1&limit=20" \
+  -H "Authorization: Bearer <jwt>"
 ```
+
+**Response `200 OK`**
+
+```json
+{
+  "data": [
+    {
+      "id": "u_101",
+      "name": "Student Name",
+      "email": "student@example.com",
+      "role": "resident",
+      "hostel": "Block A",
+      "room_no": "214",
+      "phone": "9XXXXXXXXX"
+    }
+  ],
+  "page": 1,
+  "limit": 20,
+  "total": 1
+}
+```
+
+**Errors:** `401` missing or invalid token · `403` caller is a resident
+
+---
+
+### 4. Get user by id
+
+`GET /api/users/:id` · **Access:** staff, admin, or the user themself
+
+Returns one user’s profile.
+
+```bash
+curl http://localhost:5000/api/users/u_101 \
+  -H "Authorization: Bearer <jwt>"
+```
+
+**Response `200 OK`**
+
+```json
+{
+  "user": {
+    "id": "u_101",
+    "name": "Student Name",
+    "email": "student@example.com",
+    "role": "resident",
+    "hostel": "Block A",
+    "room_no": "214",
+    "phone": "9XXXXXXXXX",
+    "created_at": "2026-11-20T09:30:00Z"
+  }
+}
+```
+
+**Errors:** `401` missing or invalid token · `403` a resident asked for another user’s id · `404` no user with that id
+
+---
 
 ## 🗄 Data Model
 
 | Table | Key fields |
-|---|---|
+| --- | --- |
 | `users` | id, name, email, password_hash, role, hostel, room_no, phone, active |
 | `orders` | id, reference_no, courier, description, item_count, status, arrival_time, collected_time, otp_hash, otp_expiry, resident_id, handled_by, pickup_group_id |
 | `pickup_groups` | id, status, created_at, created_by |
@@ -214,12 +372,12 @@ POST /api/auth/login
 
 ## 🗺 Roadmap
 
-- [ ] QR code in place of manual OTP entry
-- [ ] Photo capture of parcels at arrival
-- [ ] Reminders for unclaimed orders
-- [ ] Analytics on peak hours and pending parcels
-- [ ] Multi-gate and multi-hostel support
-- [ ] Integration with hostel ID cards
+- [ ]  QR code in place of manual OTP entry
+- [ ]  Photo capture of parcels at arrival
+- [ ]  Reminders for unclaimed orders
+- [ ]  Analytics on peak hours and pending parcels
+- [ ]  Multi-gate and multi-hostel support
+- [ ]  Integration with hostel ID cards
 
 ## 🤝 Contributing
 
@@ -230,10 +388,6 @@ Contributions are welcome.
 3. Commit your changes: `git commit -m "Add your feature"`
 4. Push the branch: `git push origin feature/your-feature`
 5. Open a Pull Request
-
-## 👤 Author
-
-**Vivek Yadav** ([@Naivete07](https://github.com/Naivete07))
 
 ## 📄 License
 
